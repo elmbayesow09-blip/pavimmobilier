@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<title>PAV IMMOBILIER - Syndic</title>
+const express = require("express");
+const mongoose = require("mongoose");
+const cors = require("cors");
+require("dotenv").config();
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+/* =========================
+   🔌 CONNEXION MONGO
+========================= */
+mongoose.connect(process.env.MONGO_URI)
+  .then(() => console.log("✅ MongoDB connecté"))
+  .catch(err => console.log("❌ Mongo error", err));
+
+/* =========================
+   📦 MODELS
+========================= */
+
+const Proprietaire = mongoose.model("Proprietaire", new mongoose.Schema({
+  nom: String,
+  telephone: String,
+  tantiemes: Number,
+  appartement: String
+}));
+
+const Charge = mongoose.model("Charge", new mongoose.Schema({
+  libelle: String,
+  montantTotal: Number,
+  date: { type: Date, default: Date.now }
+}));
+
+/* =========================
+   🌱 SEED (auto init)
+========================= */
+app.get("/seed", async (req, res) => {
+  await Proprietaire.deleteMany();
+  await Charge.deleteMany();
+
+  await Proprietaire.insertMany([
+    { nom: "Mamadou Ndiaye", telephone: "221776348031", tantiemes: 150, appartement: "A101" },
+    { nom: "Fatou Diop", telephone: "221782617843", tantiemes: 250, appartement: "B202" },
+    { nom: "Ibrahima Fall", telephone: "221781112233", tantiemes: 600, appartement: "C303" }
+  ]);
+
+  const charge = await Charge.create({
+    libelle: "Charges Nettoyage & Sécurité",
+    montantTotal: 500000
+  });
+
+  res.json({ message: "Seed OK", chargeId: charge._id });
+});
+
+/* =========================
+   📊 STATS
+========================= */
+app.get("/api/stats", async (req, res) => {
+  const nb = await Proprietaire.countDocuments();
+
+  const total = await Charge.aggregate([
+    { $group: { _id: null, total: { $sum: "$montantTotal" } } }
+  ]);
+
+  res.json({
+    nbProprietaires: nb,
+    totalCharges: total[0]?.total || 0,
+    nbPaiements: 18,
+    nbImpayes: 6
+  });
+});
+
+/* =========================
+   💰 APPELS DE FONDS
+========================= */
+app.get("/api/appels/:chargeId", async (req, res) => {
+  const charge = await Charge.findById(req.params.chargeId);
+  const props = await Proprietaire.find();
+
+  const total = props.reduce((s, p) => s + p.tantiemes, 0);
+
+  const result = props.map(p => {
+    const montant = (charge.montantTotal * p.tantiemes) / total;
+
+    const msg = `Bonjour ${p.nom}, appel de fonds: ${montant.toFixed(0)} FCFA`;
+    const wa = `https://wa.me/${p.telephone}?text=${encodeURIComponent(msg)}`;
+
+    return {
+      nom: p.nom,
+      appartement: p.appartement,
+      montant,
+      whatsapp: wa
+    };
+  });
+
+  res.json(result);
+});
+
+/* =========================
+   🌐 FRONTEND (HTML DIRECT)
+========================= */
+app.get("/", (req, res) => {
+  res.send(`
+<!DOCTYPE html>
+<html>
+<head>
+  <title>PAV Syndic</title>
+  <style>
+    body { font-family: Arial; padding: 20px; }
+    .card { border:1px solid #ddd; padding:10px; margin:10px 0; }
+    button { padding:10px; cursor:pointer; }
+  </style>
+</head>
+<body>
+
+<h1>🏢 PAV Syndic Dashboard</h1>
+
+<button onclick="seed()">1️⃣ Init Data (Seed)</button>
+<button onclick="loadStats()">2️⃣ Load Stats</button>
+<button onclick="loadAppels()">3️⃣ Appels de fonds</button>
+
+<p id="stats"></p>
+<div id="list"></div>
+
+<script>
+let chargeId = null;
+
+async function seed(){
+  const res = await fetch('/seed');
+  const data = await res.json();
+  chargeId = data.chargeId;
+  alert("Seed OK - Charge ID: " + chargeId);
+}
+
+async function loadStats(){
+  const res = await fetch('/api/stats');
+  const d = await res.json();
+  document.getElementById("stats").innerText =
+    "Propriétaires: " + d.nbProprietaires +
+    " | Charges: " + d.totalCharges;
+}
+
+async function loadAppels(){
+  if(!chargeId) return alert("Fais d'abord Seed");
+
+  const res = await fetch('/api/appels/' + chargeId);
+  const data = await res.json();
+
+  document.getElementById("list").innerHTML = data.map(d => `
+    <div class="card">
+      <h3>${d.nom}</h3>
+      <p>${d.appartement}</p>
+      <p><b>${Math.round(d.montant)} FCFA</b></p>
+      <a href="${d.whatsapp}" target="_blank">📲 WhatsApp</a>
+    </div>
+  `).join("");
+}
+</script>
+
+</body>
+</html>
+  `);
+});
+
+/* =========================
+   🚀 SERVER START
+========================= */
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log("🚀 Server running on " + PORT));
